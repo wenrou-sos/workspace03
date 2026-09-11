@@ -1,0 +1,22 @@
+{
+  "name": "hotel-maintenance-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "酒店客房报修系统：前台报修、维修接单、主管监控全流程",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "install:all": "npm install",
+    "dev": "concurrently -n server,client -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
+    "dev:server": "npm run dev -w server",
+    "dev:client": "npm run dev -w client",
+    "build": "npm run build -w client",
+    "start": "npm run start -w server",
+    "seed": "npm run seed -w server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
