@@ -190,21 +190,45 @@ router.post('/:id/complete', requireRole('supervisor'), (req, res) => {
   const tk = findTicketById(req.params.id);
   if (!tk) return res.status(404).json({ error: '工单不存在' });
   if (tk.status !== STATUS.SUBMITTED) return res.status(400).json({ error: '仅待验收工单可验收通过' });
+
+  let autoUnblocked = false;
+  let remainingOpen = [];
   db.transaction(() => {
     db.prepare(`UPDATE tickets SET status = 'completed', completed_at = datetime('now','localtime') WHERE id = ?`)
       .run(tk.id);
     addLog(tk.id, 'completed', req.body?.remark?.trim() || null, req.user.id);
-    // 验收通过后若房间仍被限制，自动解除售卖
+
+    // 验收通过后若房间仍被限制：仅当同房间不存在其他未完结工单时才自动解除售卖
     const room = getRoomById(tk.room_id);
     if (room.status === 'blocked') {
-      db.prepare(`UPDATE rooms SET status = 'available', block_reason = NULL, blocked_by = NULL, blocked_at = NULL WHERE id = ?`)
-        .run(room.id);
-      db.prepare(`INSERT INTO room_logs (room_id, action, remark, operator_id) VALUES (?, 'room_unblocked', '验收通过自动解除限制售卖', ?)`)
-        .run(room.id, req.user.id);
-      addLog(tk.id, 'room_unblocked', '验收通过，房间自动解除限制售卖。', req.user.id);
+      remainingOpen = db.prepare(`
+        SELECT id, code, status FROM tickets
+        WHERE room_id = ? AND id != ? AND status NOT IN ('completed','cancelled')
+      `).all(tk.room_id, tk.id);
+
+      if (remainingOpen.length === 0) {
+        db.prepare(`UPDATE rooms SET status = 'available', block_reason = NULL, blocked_by = NULL, blocked_at = NULL WHERE id = ?`)
+          .run(room.id);
+        db.prepare(`INSERT INTO room_logs (room_id, action, remark, operator_id) VALUES (?, 'room_unblocked', '验收通过且无其他未完结工单，自动解除限制售卖', ?)`)
+          .run(room.id, req.user.id);
+        addLog(tk.id, 'room_unblocked', '验收通过，该房间已无其他未完结工单，自动解除限制售卖。', req.user.id);
+        autoUnblocked = true;
+      } else {
+        const detail = remainingOpen.map(x => x.code).join('、');
+        db.prepare(`INSERT INTO room_logs (room_id, action, remark, operator_id) VALUES (?, 'room_kept_blocked', ?, ?)`)
+          .run(room.id, `工单 ${tk.code} 验收通过，但房间仍有 ${remainingOpen.length} 笔未完结工单（${detail}），继续限制售卖。`, req.user.id);
+        addLog(tk.id, 'room_kept_blocked',
+          `本单已验收通过，但同房间仍有 ${remainingOpen.length} 笔未完结工单（${detail}），房间继续限制售卖。`, req.user.id);
+      }
     }
   })();
-  res.json({ ticket: findTicketById(tk.id), logs: listLogs(tk.id) });
+  const out = findTicketById(tk.id);
+  res.json({
+    ticket: out,
+    logs: listLogs(tk.id),
+    autoUnblocked,
+    remainingOpenTickets: remainingOpen
+  });
 });
 
 // ---------- 主管验收不通过 ----------

@@ -69,6 +69,7 @@ export const ACTION_LABEL = {
   cancelled: '取消工单',
   room_blocked: '房间限制售卖',
   room_unblocked: '解除限制售卖',
+  room_kept_blocked: '仍有未完结工单，维持限制售卖',
   flagged: '标记为重复报修'
 };
 

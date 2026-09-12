@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
-import { useAuth } from '../auth.jsx';
 import { Badge, Modal, Empty, fmtDateTimeShort } from './ui.jsx';
 
 const STATE_COLORS = { available: '#059669', occupied: '#2563eb', blocked: '#dc2626' };
@@ -70,15 +69,14 @@ export default function RoomsView({ meta, onOpenTicket }) {
       </div>
 
       {detail && (
-        <RoomDetail id={detail} meta={meta} canManage={['front_desk', 'supervisor', 'maintenance'].includes(user.role)}
+        <RoomDetail id={detail} meta={meta}
           onClose={() => setDetail(null)} onChanged={load} onOpenTicket={onOpenTicket} />
       )}
     </div>
   );
 }
 
-function RoomDetail({ id, meta, canManage, onClose, onChanged, onOpenTicket }) {
-  const { user } = useAuth();
+function RoomDetail({ id, meta, onClose, onChanged, onOpenTicket }) {
   const [data, setData] = useState(null);
   const [mode, setMode] = useState(null);
   const [reason, setReason] = useState('');
@@ -92,7 +90,7 @@ function RoomDetail({ id, meta, canManage, onClose, onChanged, onOpenTicket }) {
   if (error) return <Modal title="出错了" onClose={onClose}><div className="alert alert-error">{error}</div></Modal>;
   if (!data) return <Modal title="加载中…" onClose={onClose}>加载中…</Modal>;
 
-  const { room, logs, tickets } = data;
+  const { room, logs, tickets, permissions } = data;
 
   async function block() {
     if (!reason.trim()) return setError('请填写限制售卖原因');
@@ -104,6 +102,7 @@ function RoomDetail({ id, meta, canManage, onClose, onChanged, onOpenTicket }) {
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   }
   async function unblock() {
+    if (!unblockRemark.trim()) return setError('请填写解除限制售卖的备注');
     setBusy(true);
     try {
       await api(`/rooms/${id}/unblock`, { method: 'POST', body: { remark: unblockRemark } });
@@ -114,12 +113,16 @@ function RoomDetail({ id, meta, canManage, onClose, onChanged, onOpenTicket }) {
 
   return (
     <Modal wide title={`房间 ${room.room_no} · ${room.category}`} onClose={onClose} footer={
-      canManage && !mode && (
+      !mode && (permissions.canBlock || permissions.canUnblock) && (
         <>
           <button className="btn" onClick={onClose}>关闭</button>
           {room.status === 'blocked'
-            ? <button className="btn btn-success" onClick={() => { setError(''); setMode('unblock'); }}>🔓 解除限制售卖</button>
-            : <button className="btn btn-danger" onClick={() => { setError(''); setMode('block'); }}>⛔ 限制售卖</button>}
+            ? permissions.canUnblock
+              ? <button className="btn btn-success" onClick={() => { setError(''); setMode('unblock'); }}>🔓 解除限制售卖</button>
+              : <button className="btn" disabled title={permissions.unblockReason || ''}>🔒 不可解除（{permissions.unblockReason}）</button>
+            : permissions.canBlock
+              ? <button className="btn btn-danger" onClick={() => { setError(''); setMode('block'); }}>⛔ 限制售卖</button>
+              : null}
         </>
       )
     }>
@@ -132,6 +135,11 @@ function RoomDetail({ id, meta, canManage, onClose, onChanged, onOpenTicket }) {
         {room.blocked_at && <><dt>限制时间</dt><dd>{room.blocked_at}</dd></>}
       </dl>
 
+      {room.status === 'blocked' && !permissions.canUnblock && permissions.unblockReason && (
+        <div className="alert alert-warning" style={{ marginTop: 14 }}>
+          🔒 {permissions.unblockReason}
+        </div>
+      )}
       {mode === 'block' && (
         <div className="callout block" style={{ marginTop: 14 }}>
           <div className="t">⛔ 设置房间为限制售卖</div>
@@ -150,7 +158,7 @@ function RoomDetail({ id, meta, canManage, onClose, onChanged, onOpenTicket }) {
           <div className="t">🔓 解除限制售卖</div>
           <div className="field" style={{ marginTop: 8 }}>
             <textarea rows={2} value={unblockRemark} onChange={e => setUnblockRemark(e.target.value)}
-              placeholder="解除备注（选填），如：已验收合格恢复售卖" />
+              placeholder="解除备注（必填），如：维修完成验收合格，恢复售卖" />
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button className="btn btn-sm" onClick={() => setMode(null)}>取消</button>
@@ -181,7 +189,11 @@ function RoomDetail({ id, meta, canManage, onClose, onChanged, onOpenTicket }) {
       <ul className="timeline">
         {logs.map(l => (
           <li key={l.id}>
-            <div className="act">{l.action === 'room_blocked' ? '⛔ 限制售卖' : '🔓 解除限制售卖'}</div>
+            <div className="act">{
+              l.action === 'room_blocked' ? '⛔ 限制售卖'
+              : l.action === 'room_kept_blocked' ? '🔒 维持限制售卖'
+              : '🔓 解除限制售卖'
+            }</div>
             <div className="meta">{l.operator_name || '系统'}（{l.operator_role ? meta.roleLabel[l.operator_role] : ''}）· {l.created_at}</div>
             {l.remark && <div className="remark">{l.remark}</div>}
           </li>

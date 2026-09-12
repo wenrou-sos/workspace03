@@ -6,13 +6,14 @@ import { Modal, Badge, PriorityTag, fmtDateTimeShort, elapsed } from './ui.jsx';
 const ACTION_ICONS = {
   created: '📝', accepted: '🔧', waiting_parts: '📦', parts_arrived: '📥',
   submitted: '🔍', rejected: '↩️', completed: '✅', cancelled: '🚫',
-  room_blocked: '⛔', room_unblocked: '🔓', flagged: '⚠️'
+  room_blocked: '⛔', room_unblocked: '🔓', room_kept_blocked: '🔒', flagged: '⚠️'
 };
 
 export default function TicketDetail({ ticketId, meta, onClose, onChanged }) {
   const { user } = useAuth();
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState(null); // 当前展开的操作表单
   const [form, setForm] = useState({});
@@ -39,11 +40,15 @@ export default function TicketDetail({ ticketId, meta, onClose, onChanged }) {
   async function act(path, payload, successMsg) {
     setBusy(true);
     setError('');
+    setNotice('');
     try {
       const d = await api(path, { method: 'POST', body: payload });
       setData(d);
       setMode(null);
       setForm({});
+      if (d.autoUnblocked === false && Array.isArray(d.remainingOpenTickets) && d.remainingOpenTickets.length > 0) {
+        setNotice(`工单已验收通过，但该房间还有 ${d.remainingOpenTickets.length} 笔未完结工单，房间继续限制售卖。`);
+      }
       onChanged?.();
     } catch (e) {
       setError(e.message);
@@ -145,7 +150,7 @@ export default function TicketDetail({ ticketId, meta, onClose, onChanged }) {
             确认验收通过</button></>
         }>
           <div className="alert alert-info" style={{ marginBottom: 8 }}>
-            验收通过后工单关闭；若该房间为「限制售卖」将自动解除。
+            验收通过后工单关闭；若该房间为「限制售卖」且无其他未完结工单，将自动解除。
           </div>
           <textarea rows={2} placeholder="验收意见（选填）"
             value={form.remark || ''} onChange={e => setForm({ ...form, remark: e.target.value })} />
@@ -202,6 +207,7 @@ export default function TicketDetail({ ticketId, meta, onClose, onChanged }) {
       ) : <button className="btn" onClick={onClose}>关闭</button>
     }>
       {error && <div className="alert alert-error">{error}</div>}
+      {notice && <div className="alert alert-warning">{notice}</div>}
 
       {t.is_repeat === 1 && (
         <div className="callout repeat">
