@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
 import { durationLabel } from '../components/ui.jsx';
 import { partsEtaStatus, overdueHoursLabel } from '../utils/parts.js';
@@ -14,24 +14,47 @@ const FILTERS = [
   { key: 'parts_upcoming', label: '配件待到货', tone: '#64748b' }
 ];
 
-export default function Dashboard({ meta, onOpenTicket, alertsSummary, refreshKey }) {
+export default function Dashboard({ meta, onOpenTicket, refreshKey }) {
   const [s, setS] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [filter, setFilter] = useState('all');
   const [error, setError] = useState('');
 
-  useEffect(() => {
+  const loadOverview = useCallback(() => {
     api('/stats/overview').then(setS).catch(e => setError(e.message));
   }, []);
-  useEffect(() => {
+  const loadAlerts = useCallback(() => {
     api('/stats/alerts').then(d => setAlerts(d.alerts)).catch(() => {});
-  }, [refreshKey]);
+  }, []);
 
+  // 工单操作弹窗关闭（refreshKey 变化）后重新加载
+  useEffect(() => {
+    loadOverview();
+    loadAlerts();
+  }, [refreshKey, loadOverview, loadAlerts]);
+
+  // 定时轮询：其他用户改变工单状态时看板也能保持最新
+  useEffect(() => {
+    const h = setInterval(() => { loadOverview(); loadAlerts(); }, 20000);
+    return () => clearInterval(h);
+  }, [loadOverview, loadAlerts]);
+
+  // 卡片数量直接由明细推导，与下方列表、筛选 chip 永远同源
   const counts = useMemo(() => {
     const m = { all: alerts.length };
     for (const a of alerts) m[a.severity_key] = (m[a.severity_key] || 0) + 1;
     return m;
   }, [alerts]);
+
+  const sum = useMemo(() => ({
+    pendingOverdue: counts.pending_overdue || 0,
+    partsOverdue: counts.parts_overdue || 0,
+    rejected: counts.rejected || 0,
+    activeOverdue: counts.active_overdue || 0,
+    partsToday: counts.parts_today || 0,
+    partsUpcoming: counts.parts_upcoming || 0,
+    rejectedOverdue: alerts.filter(a => a.severity_key === 'rejected' && a.overdue_minutes > 8 * 60).length
+  }), [counts, alerts]);
 
   const shown = filter === 'all' ? alerts : alerts.filter(a => a.severity_key === filter);
 
@@ -39,7 +62,6 @@ export default function Dashboard({ meta, onOpenTicket, alertsSummary, refreshKe
   if (!s) return <div className="loading">加载看板数据…</div>;
 
   const sc = s.statusCounts;
-  const sum = alertsSummary || s.alertsSummary;
   const maxTrend = Math.max(1, ...s.trend.map(t => t.total));
   const maxCat = Math.max(1, ...s.categories.map(c => c.count));
 
@@ -56,8 +78,10 @@ export default function Dashboard({ meta, onOpenTicket, alertsSummary, refreshKe
         <StatCard label="维修超时（>24h）" value={sum.activeOverdue} cls={sum.activeOverdue ? 'warn' : 'ok'}
           onClick={() => setFilter('active_overdue')} />
         <StatCard label="等待配件" value={sc.waiting_parts || 0}
-          sub={sum.partsToday ? `今日到货 ${sum.partsToday}` : ''} cls="warn"
-          onClick={() => setFilter('parts_today')} />
+          sub={[
+            sum.partsOverdue ? `逾期 ${sum.partsOverdue}` : '',
+            sum.partsToday ? `今日到货 ${sum.partsToday}` : ''
+          ].filter(Boolean).join(' · ')} cls={sum.partsOverdue ? 'danger' : 'warn'} />
         <StatCard label="待我验收" value={sc.submitted || 0} />
         <StatCard label="限制售卖房间" value={`${s.blockedRooms}/${s.totalRooms}`} cls={s.blockedRooms ? 'danger' : 'ok'} />
         <StatCard label="重复报修" value={s.repeatCount} cls={s.repeatCount ? 'warn' : 'ok'} />
@@ -195,7 +219,10 @@ function AlertTable({ alerts, meta, onOpen }) {
                       <div style={{ fontSize: 12 }}>{ps.label}</div>
                     </>
                   ) : a.alert_type === 'rejected' ? (
-                    <>退回 {overdueHoursLabel(a.overdue_minutes)}{a.overdue_minutes > 480 ? '' : ''}</>
+                    <>
+                      <div>退回 {overdueHoursLabel(a.overdue_minutes)}</div>
+                      {a.overdue_minutes > 8 * 60 && <div style={{ fontSize: 12 }}>已超 8h 未处理</div>}
+                    </>
                   ) : (
                     <>已等待 {overdueHoursLabel(a.overdue_minutes)}</>
                   )}

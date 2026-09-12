@@ -5,7 +5,6 @@ import { Badge, Modal, Empty, fmtDateTimeShort } from './ui.jsx';
 const STATE_COLORS = { available: '#059669', occupied: '#2563eb', blocked: '#dc2626' };
 
 export default function RoomsView({ meta, onOpenTicket }) {
-  const { user } = useAuth();
   const [rooms, setRooms] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');

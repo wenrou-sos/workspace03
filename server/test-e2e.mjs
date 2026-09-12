@@ -21,6 +21,16 @@ async function req(method, path, token, body) {
 
 const login = async (u, p) => (await req('POST', '/users/login', null, { username: u, password: p })).data;
 
+// 与前端 utils/parts.js 同口径：按本地日期比较
+function partsEtaLevel(eta) {
+  if (!eta) return 'unknown';
+  const today = new Date();
+  const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const d = new Date(`${eta.slice(0, 10)}T00:00:00`);
+  const days = Math.round((t0 - d) / 86400000);
+  return days > 0 ? 'overdue' : days === 0 ? 'today' : 'upcoming';
+}
+
 console.log('\n=== 1. 登录与鉴权 ===');
 const front = await login('front', 'front123');
 const repair = await login('repair', 'repair123');
@@ -277,16 +287,43 @@ ok('维修员预警仅含本人工单', myAlerts.every(a => a.assigned_name === 
 ok('维修员看不到未分配的待接单预警', !myAlerts.some(a => a.alert_type === 'pending_overdue'));
 ok('前台不能看预警明细', (await req('GET', '/stats/alerts', front.token)).status === 403);
 
+// 维修员角标口径 = 对应页签列表口径（assignee=me），他人逾期配件不得计入
+const myWaiting = (await req('GET', '/tickets?status=waiting_parts&assignee=me', repair.token)).data;
+const shopWaiting = (await req('GET', '/tickets?status=waiting_parts', repair.token)).data;
+const myOverdueParts = myWaiting.filter(
+  t => partsEtaLevel(t.parts_expected_at) === 'overdue'
+).length;
+const shopOverdueParts = shopWaiting.filter(
+  t => partsEtaLevel(t.parts_expected_at) === 'overdue'
+).length;
+ok('本人配件逾期数与本人列表一致',
+  myAlerts.filter(a => a.severity_key === 'parts_overdue').length === myOverdueParts,
+  `预警 ${myAlerts.filter(a => a.severity_key === 'parts_overdue').length} vs 列表 ${myOverdueParts}`);
+ok('全店配件逾期数大于本人时角标不得借用全店口径',
+  shopOverdueParts >= myOverdueParts,
+  `全店 ${shopOverdueParts} / 本人 ${myOverdueParts}`);
+// 同样验证待验收/返工的本人筛选
+const mySubmitted = (await req('GET', '/tickets?status=submitted&assignee=me', repair.token)).data;
+const myRejected = (await req('GET', '/tickets?status=rejected&assignee=me', repair.token)).data;
+ok('维修员待验收列表仅含本人', mySubmitted.every(t => t.assigned_name === '张建国'));
+ok('维修员返工列表仅含本人', myRejected.every(t => t.assigned_name === '张建国'));
+
 console.log('\n=== 11. 状态变化后预警自动移除、配件到位不计逾期 ===');
 // 主管接单处理掉一笔待接单超时预警前，先记录数量
 const before = (await req('GET', '/stats/alerts', admin.token)).data.alerts;
 const aPending = before.find(a => a.severity_key === 'pending_overdue');
 const beforePending = before.filter(a => a.severity_key === 'pending_overdue').length;
-// 维修员接单 -> 立即不再是 pending_overdue
+// 维修员接单 -> 立即不再是 pending_overdue，且 overview 汇总与明细同步
+const ovBefore = (await req('GET', '/stats/overview', admin.token)).data.alertsSummary;
+ok('变更前 overview 待接单超时数与明细一致', ovBefore.pendingOverdue === beforePending,
+  `${ovBefore.pendingOverdue} vs ${beforePending}`);
 await req('POST', `/tickets/${aPending.id}/accept`, repair.token, {});
 const afterAccept = (await req('GET', '/stats/alerts', admin.token)).data.alerts;
 const afterPending = afterAccept.filter(a => a.severity_key === 'pending_overdue').length;
 ok('接单后从待接单超时预警移除', afterPending === beforePending - 1, `${beforePending} -> ${afterPending}`);
+const ovAfter = (await req('GET', '/stats/overview', admin.token)).data.alertsSummary;
+ok('接单后 overview 汇总同步减少', ovAfter.pendingOverdue === afterPending,
+  `${ovAfter.pendingOverdue} vs ${afterPending}`);
 
 // 808 配件逾期工单：配件到位恢复维修后，不再计入逾期
 const partsTicket = afterAccept.find(a => a.severity_key === 'parts_overdue');

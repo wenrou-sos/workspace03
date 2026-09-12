@@ -48,8 +48,8 @@ function Shell({ meta, user, logout }) {
         { key: 'pool', label: '待接工单池', status: 'pending' },
         { key: 'mine', label: '我的工单' },
         { key: 'parts', label: '📦 配件跟进', status: 'waiting_parts', assignee: 'me' },
-        { key: 'submitted', label: '待验收', status: 'submitted' },
-        { key: 'rejected', label: '返工单', status: 'rejected' },
+        { key: 'submitted', label: '待验收', status: 'submitted', assignee: 'me' },
+        { key: 'rejected', label: '返工单', status: 'rejected', assignee: 'me' },
         { key: 'all', label: '全部工单' },
         { key: 'rooms', label: '客房' }
       ];
@@ -126,16 +126,19 @@ function Shell({ meta, user, logout }) {
 
   const [badgeCounts, setBadgeCounts] = useState({});
   useEffect(() => {
+    // 角标口径必须与对应页签列表一致：
+    // 维修员只统计本人负责的工单（含配件跟进角标），避免显示他人待办
+    const isMaint = role === 'maintenance';
     Promise.all([
       api('/tickets?status=pending').catch(() => []),
-      api('/tickets?status=submitted').catch(() => []),
-      api('/tickets?status=rejected').catch(() => []),
-      api('/tickets?status=waiting_parts').catch(() => [])
+      api(isMaint ? '/tickets?status=submitted&assignee=me' : '/tickets?status=submitted').catch(() => []),
+      api(isMaint ? '/tickets?status=rejected&assignee=me' : '/tickets?status=rejected').catch(() => []),
+      api(isMaint ? '/tickets?status=waiting_parts&assignee=me' : '/tickets?status=waiting_parts').catch(() => [])
     ]).then(([p, s, r, w]) => setBadgeCounts({
       pending: p.length, submitted: s.length, rejected: r.length,
       partsOverdue: w.filter(t => partsEtaStatus(t.parts_expected_at, meta.today).level === 'overdue').length
     }));
-  }, [tickets, meta.today]);
+  }, [tickets, meta.today, role]);
 
   const tabsNeedCount = {
     pending: badgeCounts.pending,
