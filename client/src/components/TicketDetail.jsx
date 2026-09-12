@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { Modal, Badge, PriorityTag, fmtDateTimeShort, elapsed } from './ui.jsx';
+import { partsEtaStatus, overdueHoursLabel, todayStr } from '../utils/parts.js';
 
 const ACTION_ICONS = {
   created: '📝', accepted: '🔧', waiting_parts: '📦', parts_arrived: '📥',
@@ -67,6 +68,7 @@ export default function TicketDetail({ ticketId, meta, onClose, onChanged }) {
       actions.push({ key: 'parts', label: '📦 等待配件', cls: 'btn-warning' });
     }
     if (isMine && t.status === 'waiting_parts') {
+      actions.push({ key: 'eta', label: '📅 调整到货日期', cls: 'btn-warning' });
       actions.push({ key: 'resume', label: '📥 配件到位，恢复维修', cls: 'btn-primary' });
     }
     if (isMine && ['accepted', 'waiting_parts', 'rejected'].includes(t.status)) {
@@ -106,12 +108,46 @@ export default function TicketDetail({ ticketId, meta, onClose, onChanged }) {
         <ActionBox icon="📦" title="申请等待配件" footer={
           <>{close}<button className="btn btn-warning btn-sm" disabled={busy}
             onClick={() => {
-              if (!form.parts_note?.trim()) return setError('请填写配件信息与预计到货时间');
-              act(`/tickets/${t.id}/waiting-parts`, { parts_note: form.parts_note });
+              if (!form.parts_note?.trim()) return setError('请填写配件信息');
+              if (!form.parts_expected_at) return setError('请选择预计到货日期');
+              act(`/tickets/${t.id}/waiting-parts`, {
+                parts_note: form.parts_note,
+                parts_expected_at: form.parts_expected_at
+              });
             }}>提交申请</button></>
         }>
-          <textarea rows={3} placeholder="例如：风机马达 YJF-61 已向厂家申购，预计 2 天到货"
+          <textarea rows={2} placeholder="所需配件名称、型号、申购渠道，例如：风机马达 YJF-61"
             value={form.parts_note || ''} onChange={e => setForm({ ...form, parts_note: e.target.value })} />
+          <label style={{ fontSize: 13, color: 'var(--text-muted)', display: 'block', margin: '8px 0 4px' }}>
+            预计到货日期 *
+          </label>
+          <input type="date" min={todayStr()} style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6 }}
+            value={form.parts_expected_at || ''}
+            onChange={e => setForm({ ...form, parts_expected_at: e.target.value })} />
+        </ActionBox>
+      );
+    }
+    if (f === 'eta') {
+      const ps = partsEtaStatus(t.parts_expected_at, meta.today);
+      return (
+        <ActionBox icon="📅" title="调整配件预计到货日期" footer={
+          <>{close}<button className="btn btn-warning btn-sm" disabled={busy}
+            onClick={() => {
+              if (!form.parts_expected_at) return setError('请选择新的预计到货日期');
+              act(`/tickets/${t.id}/parts-eta`, {
+                parts_expected_at: form.parts_expected_at,
+                reason: form.reason
+              });
+            }}>保存调整</button></>
+        }>
+          <div className="alert alert-warning" style={{ marginBottom: 8 }}>
+            当前预计到货：{t.parts_expected_at || '未登记'}（{ps.label}）
+          </div>
+          <input type="date" min={todayStr()} style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6 }}
+            value={form.parts_expected_at || ''}
+            onChange={e => setForm({ ...form, parts_expected_at: e.target.value })} />
+          <textarea rows={2} style={{ marginTop: 8 }} placeholder="调整原因（选填），如：厂家缺货改期、物流延误"
+            value={form.reason || ''} onChange={e => setForm({ ...form, reason: e.target.value })} />
         </ActionBox>
       );
     }
@@ -215,12 +251,19 @@ export default function TicketDetail({ ticketId, meta, onClose, onChanged }) {
           该工单被标记为重复报修{t.linked_ticket_id ? `（关联工单 #${t.linked_ticket_id}）` : ''}，请优先安排原维修人员跟进。
         </div>
       )}
-      {t.status === 'waiting_parts' && (
-        <div className="callout parts">
-          <div className="t">📦 等待配件中</div>
-          {t.parts_note}
-        </div>
-      )}
+      {t.status === 'waiting_parts' && (() => {
+        const ps = partsEtaStatus(t.parts_expected_at, meta.today);
+        const overdue = ps.level === 'overdue';
+        return (
+          <div className={`callout ${overdue ? 'reject' : 'parts'}`}>
+            <div className="t">📦 等待配件中{overdue ? ' · 已超预计到货日期' : ''}</div>
+            <div>{t.parts_note}</div>
+            <div style={{ marginTop: 6, fontWeight: 700, color: ps.color }}>
+              预计到货：{t.parts_expected_at || '未登记'}（{ps.label}）
+            </div>
+          </div>
+        );
+      })()}
       {t.status === 'rejected' && (
         <div className="callout reject">
           <div className="t">↩️ 验收不通过，已退回维修</div>
@@ -243,6 +286,19 @@ export default function TicketDetail({ ticketId, meta, onClose, onChanged }) {
         </dd>
         <dt>报修人</dt><dd>{t.created_by_name}（{meta.roleLabel[t.created_by_role]}）</dd>
         <dt>维修人员</dt><dd>{t.assigned_name || <span style={{ color: '#94a3b8' }}>待分配</span>}</dd>
+        {t.status === 'waiting_parts' && (
+          <>
+            <dt>预计到货</dt>
+            <dd>
+              {t.parts_expected_at || <span style={{ color: '#dc2626' }}>未登记</span>}
+              {t.parts_expected_at && (
+                <span style={{ marginLeft: 8, color: partsEtaStatus(t.parts_expected_at, meta.today).color, fontWeight: 700 }}>
+                  {partsEtaStatus(t.parts_expected_at, meta.today).label}
+                </span>
+              )}
+            </dd>
+          </>
+        )}
         <dt>报修时间</dt><dd>{fmtDateTimeShort(t.created_at)}（{elapsed(t.created_at)}）</dd>
         <dt>接单时间</dt><dd>{fmtDateTimeShort(t.accepted_at)}</dd>
         {t.completed_at && <><dt>完成时间</dt><dd>{fmtDateTimeShort(t.completed_at)}</dd></>}

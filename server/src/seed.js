@@ -72,10 +72,10 @@ export function resetAndSeed() {
       INSERT INTO tickets
       (code, room_id, category, title, description, priority, status,
        created_by, assigned_to, is_repeat, linked_ticket_id, parts_note,
-       reject_reason, resolution, created_at, accepted_at, completed_at)
+       parts_expected_at, reject_reason, resolution, created_at, accepted_at, completed_at)
       VALUES (@code,@room_id,@category,@title,@description,@priority,@status,
               @created_by,@assigned_to,@is_repeat,@linked_ticket_id,@parts_note,
-              @reject_reason,@resolution,@created_at,@accepted_at,@completed_at)
+              @parts_expected_at,@reject_reason,@resolution,@created_at,@accepted_at,@completed_at)
     `);
     const insLog = db.prepare(
       `INSERT INTO ticket_logs (ticket_id, action, remark, operator_id, created_at)
@@ -93,6 +93,7 @@ export function resetAndSeed() {
     function add(tk, logs) {
       const id = insTicket.run({
         assigned_to: null, is_repeat: 0, linked_ticket_id: null, parts_note: null,
+        parts_expected_at: null,
         reject_reason: null, resolution: null,
         accepted_at: null, completed_at: null,
         ...tk
@@ -142,19 +143,21 @@ export function resetAndSeed() {
       ['accepted', '已到场查看，需拆卸下水管检查。', users.repair, t('-4 hours')]
     ]);
 
-    // 4. 等待配件
+    // 4. 等待配件（预计到货日期已过 —— 逾期）
     add({
       code: code(), room_id: roomIds['808'], category: '空调',
       title: '中央空调出风口异响', description: '高档位时出风口有明显"哒哒"声，影响客人休息。',
       priority: 'normal', status: STATUS.WAITING_PARTS,
       created_by: users.front, assigned_to: users.repair2,
-      parts_note: '风机马达轴承损坏，型号 YJF-61，已向厂家申购，预计 2 天到货。',
+      parts_note: '风机马达轴承损坏，型号 YJF-61，已向厂家申购。',
+      parts_expected_at: t('-1 days').slice(0, 10),
       created_at: t('-1 days'), accepted_at: t('-1 days')
     }, [
       ['created', '行政套房客人投诉，已致歉并换房。', users.front, t('-1 days')],
       ['room_blocked', '套房停售，等配件维修。', users.front, t('-1 days')],
       ['accepted', '拆机检查，确认风机马达轴承磨损。', users.repair2, t('-20 hours')],
-      ['waiting_parts', '风机马达 YJF-61 申购中，预计 2 天。', users.repair2, t('-19 hours')]
+      ['waiting_parts', '风机马达 YJF-61 申购中（预计到货：' + t('-3 days').slice(0, 10) + '）。', users.repair2, t('-19 hours')],
+      ['parts_eta_changed', t('-3 days').slice(0, 10) + ' → ' + t('-1 days').slice(0, 10) + '；原因：厂家缺货改期。', users.repair2, t('-10 hours')]
     ]);
 
     // 5. 待验收
@@ -223,17 +226,44 @@ export function resetAndSeed() {
       ['accepted', '带工具与备用滑轨上楼处理。', users.repair2, t('-7 hours')]
     ]);
 
-    // 10. 待接单（普通）
+    // 10. 待接单（超时：5 小时未接单）
     add({
       code: code(), room_id: roomIds['706'], category: '网络',
       title: 'Wi-Fi 频繁掉线', description: '客人反馈视频会议时网络每几分钟断一次。',
-      priority: 'normal', status: STATUS.PENDING,
-      created_by: users.front, created_at: t('-2 hours')
+      priority: 'high', status: STATUS.PENDING,
+      created_by: users.front, created_at: t('-5 hours')
     }, [
-      ['created', '商务客人，希望今天解决。', users.front, t('-2 hours')]
+      ['created', '商务客人，要求今天务必解决。', users.front, t('-5 hours')]
     ]);
 
-    // 11. 已完成（前天，配件更换）
+    // 11. 等待配件（今日预计到货）
+    add({
+      code: code(), room_id: roomIds['812'], category: '家具',
+      title: '衣柜推拉门轨道损坏', description: '推拉门脱轨无法闭合，轨道连接件断裂。',
+      priority: 'normal', status: STATUS.WAITING_PARTS,
+      created_by: users.front2, assigned_to: users.repair2,
+      parts_note: '推拉门轨道连接件一套，库房今日调拨。',
+      parts_expected_at: t('0 days').slice(0, 10),
+      created_at: t('-1 days'), accepted_at: t('-1 days')
+    }, [
+      ['created', '客人反映衣柜门无法关闭。', users.front2, t('-1 days')],
+      ['accepted', null, users.repair2, t('-22 hours')],
+      ['waiting_parts', '轨道连接件断裂，库房调拨（预计到货：' + t('0 days').slice(0, 10) + '）。', users.repair2, t('-20 hours')]
+    ]);
+
+    // 12. 维修中超时（超过 24 小时未完成）
+    add({
+      code: code(), room_id: roomIds['708'], category: '水电',
+      title: '淋浴花洒水量过小', description: '客人反映淋浴出水很小，怀疑管路堵塞。',
+      priority: 'normal', status: STATUS.ACCEPTED,
+      created_by: users.front, assigned_to: users.repair,
+      created_at: t('-2 days'), accepted_at: t('-2 days')
+    }, [
+      ['created', null, users.front, t('-2 days')],
+      ['accepted', '先拆喷头检查滤网，怀疑墙内管路也要疏通。', users.repair, t('-2 days')]
+    ]);
+
+    // 13. 已完成（前天，配件更换）
     add({
       code: code(), room_id: roomIds['703'], category: '电器',
       title: '电热水壶不通电', description: '底座指示灯不亮，无法烧水。',

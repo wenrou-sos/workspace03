@@ -137,6 +137,17 @@ router.post('/:id/accept', requireRole('maintenance'), (req, res) => {
   res.json({ ticket: out, logs: listLogs(tk.id) });
 });
 
+// 校验预计到货日期：YYYY-MM-DD 合法且不早于今天
+function validateEta(eta) {
+  if (!eta || !/^\d{4}-\d{2}-\d{2}$/.test(eta)) return '请选择预计到货日期';
+  const d = new Date(`${eta}T00:00:00`);
+  if (isNaN(d.getTime())) return '预计到货日期格式不正确';
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  if (eta < todayStr) return '预计到货日期不能早于今天';
+  return null;
+}
+
 // ---------- 等待配件 ----------
 router.post('/:id/waiting-parts', requireRole('maintenance'), (req, res) => {
   const tk = findTicketById(req.params.id);
@@ -146,10 +157,37 @@ router.post('/:id/waiting-parts', requireRole('maintenance'), (req, res) => {
     return res.status(400).json({ error: '仅维修中的工单可申请等待配件' });
   }
   const note = (req.body?.parts_note || '').trim();
-  if (!note) return res.status(400).json({ error: '请填写所需配件及预计到货时间' });
+  if (!note) return res.status(400).json({ error: '请填写所需配件信息' });
+  const eta = (req.body?.parts_expected_at || '').trim();
+  const etaErr = validateEta(eta);
+  if (etaErr) return res.status(400).json({ error: etaErr });
   db.transaction(() => {
-    db.prepare(`UPDATE tickets SET status = 'waiting_parts', parts_note = ? WHERE id = ?`).run(note, tk.id);
-    addLog(tk.id, 'waiting_parts', note, req.user.id);
+    db.prepare(`UPDATE tickets SET status = 'waiting_parts', parts_note = ?, parts_expected_at = ? WHERE id = ?`)
+      .run(note, eta, tk.id);
+    addLog(tk.id, 'waiting_parts', `${note}（预计到货：${eta}）`, req.user.id);
+  })();
+  res.json({ ticket: findTicketById(tk.id), logs: listLogs(tk.id) });
+});
+
+// ---------- 调整配件预计到货日期（仅等待配件中的本人工单） ----------
+router.post('/:id/parts-eta', requireRole('maintenance'), (req, res) => {
+  const tk = findTicketById(req.params.id);
+  if (!tk) return res.status(404).json({ error: '工单不存在' });
+  if (tk.assigned_to !== req.user.id) return res.status(403).json({ error: '只能操作自己接的工单' });
+  if (tk.status !== STATUS.WAITING_PARTS) {
+    return res.status(400).json({ error: '仅等待配件中的工单可调整预计到货日期' });
+  }
+  const eta = (req.body?.parts_expected_at || '').trim();
+  const etaErr = validateEta(eta);
+  if (etaErr) return res.status(400).json({ error: etaErr });
+  const reason = (req.body?.reason || '').trim();
+  if (tk.parts_expected_at === eta) {
+    return res.status(400).json({ error: '新日期与当前预计到货日期相同' });
+  }
+  db.transaction(() => {
+    db.prepare(`UPDATE tickets SET parts_expected_at = ? WHERE id = ?`).run(eta, tk.id);
+    const remark = `${tk.parts_expected_at || '未登记'} → ${eta}${reason ? `；原因：${reason}` : ''}`;
+    addLog(tk.id, 'parts_eta_changed', remark, req.user.id);
   })();
   res.json({ ticket: findTicketById(tk.id), logs: listLogs(tk.id) });
 });

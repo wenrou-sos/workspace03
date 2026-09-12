@@ -1,4 +1,5 @@
 import { Badge, PriorityTag, Empty, fmtDateTimeShort } from './ui.jsx';
+import { partsEtaStatus } from '../utils/parts.js';
 
 // 状态快捷筛选
 export const FILTERS = [
@@ -32,34 +33,45 @@ export default function TicketList({ tickets, meta, loading, onOpen, showCreator
           </tr>
         </thead>
         <tbody>
-          {tickets.map(t => (
-            <tr key={t.id} onClick={() => onOpen(t.id)}>
-              <td>
-                <span className="ticket-code">{t.code}</span>
-                {t.is_repeat === 1 && <span className="repeat-tag" title="重复报修">重复</span>}
-              </td>
-              <td>
-                <span className="room-no">{t.room_no}</span>
-                {t.room_status === 'blocked' && <span title="限制售卖"> ⛔</span>}
-              </td>
-              <td>
-                <div className="ticket-title">
-                  {t.title}
-                  <div className="sub">[{t.category}] {t.description.slice(0, 30)}{t.description.length > 30 ? '…' : ''}</div>
-                </div>
-              </td>
-              <td><PriorityTag priority={t.priority} labels={meta.priorityLabel} /></td>
-              <td>
-                <Badge color={meta.statusColor[t.status]} label={meta.statusLabel[t.status]} />
-                {t.status === 'waiting_parts' && <div className="sub" style={{ fontSize: 11, color: '#92400e', marginTop: 3 }}>📦 {t.parts_note?.slice(0, 14)}…</div>}
-              </td>
-              {showCreator && <td>{t.created_by_name}</td>}
-              {showAssignee && <td>{t.assigned_name || <span style={{ color: '#94a3b8' }}>未接单</span>}</td>}
-              <td style={{ whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: 12.5 }}>
-                {fmtDateTimeShort(t.created_at)}
-              </td>
-            </tr>
-          ))}
+          {tickets.map(t => {
+            const parts = t.status === 'waiting_parts' ? partsEtaStatus(t.parts_expected_at, meta.today) : null;
+            return (
+              <tr key={t.id} onClick={() => onOpen(t.id)}
+                style={parts?.level === 'overdue' ? { background: '#fff7f7' } : undefined}>
+                <td>
+                  <span className="ticket-code">{t.code}</span>
+                  {t.is_repeat === 1 && <span className="repeat-tag" title="重复报修">重复</span>}
+                </td>
+                <td>
+                  <span className="room-no">{t.room_no}</span>
+                  {t.room_status === 'blocked' && <span title="限制售卖"> ⛔</span>}
+                </td>
+                <td>
+                  <div className="ticket-title">
+                    {t.title}
+                    <div className="sub">[{t.category}] {t.description.slice(0, 30)}{t.description.length > 30 ? '…' : ''}</div>
+                  </div>
+                </td>
+                <td><PriorityTag priority={t.priority} labels={meta.priorityLabel} /></td>
+                <td>
+                  <Badge color={meta.statusColor[t.status]} label={meta.statusLabel[t.status]} />
+                  {parts && (
+                    <div className="sub" style={{
+                      fontSize: 11, marginTop: 3,
+                      color: parts.color, fontWeight: parts.level === 'overdue' ? 700 : 500
+                    }}>
+                      📦 {t.parts_expected_at || '日期未登记'} · {parts.label}
+                    </div>
+                  )}
+                </td>
+                {showCreator && <td>{t.created_by_name}</td>}
+                {showAssignee && <td>{t.assigned_name || <span style={{ color: '#94a3b8' }}>未接单</span>}</td>}
+                <td style={{ whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: 12.5 }}>
+                  {fmtDateTimeShort(t.created_at)}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

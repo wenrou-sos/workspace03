@@ -63,6 +63,7 @@ export const ACTION_LABEL = {
   accepted: '接单处理',
   waiting_parts: '申请等待配件',
   parts_arrived: '配件到位，恢复维修',
+  parts_eta_changed: '调整配件预计到货日期',
   submitted: '提交验收',
   rejected: '验收不通过',
   completed: '验收通过，工单完成',

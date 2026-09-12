@@ -24,6 +24,7 @@ const login = async (u, p) => (await req('POST', '/users/login', null, { usernam
 console.log('\n=== 1. 登录与鉴权 ===');
 const front = await login('front', 'front123');
 const repair = await login('repair', 'repair123');
+const repair2 = await login('repair2', 'repair123');
 const admin = await login('admin', 'admin123');
 ok('前台登录', front?.token);
 ok('维修员登录', repair?.token);
@@ -61,13 +62,27 @@ const accept = await req('POST', `/tickets/${tid}/accept`, repair.token, {});
 ok('维修员接单', accept.status === 200 && accept.data.ticket.status === 'accepted', accept.data?.error);
 ok('已分配维修员', accept.data.ticket.assigned_to === repair.user.id);
 
-// 状态机：未接单不能直接等配件 —— 用别人/错误状态验证
-const wrongParts = await req('POST', `/tickets/${tid}/waiting-parts`, repair.token, {});
-ok('等配件缺少备注被拒', wrongParts.status === 400);
+// 等配件：缺少备注或日期都被拒
+const wpBad1 = await req('POST', `/tickets/${tid}/waiting-parts`, repair.token, { parts_note: '压缩机 X-1' });
+ok('等配件缺日期被拒', wpBad1.status === 400, `实际 ${wpBad1.status}`);
+const wpBad2 = await req('POST', `/tickets/${tid}/waiting-parts`, repair.token, { parts_note: '', parts_expected_at: '2099-01-01' });
+ok('等配件缺备注被拒', wpBad2.status === 400, `实际 ${wpBad2.status}`);
+const wpBad3 = await req('POST', `/tickets/${tid}/waiting-parts`, repair.token, { parts_note: 'x', parts_expected_at: '2000-01-01' });
+ok('到货日期早于今天被拒', wpBad3.status === 400, `实际 ${wpBad3.status}`);
+const future = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+const wp = await req('POST', `/tickets/${tid}/waiting-parts`, repair.token, { parts_note: '压缩机 X-1，预计 3 天', parts_expected_at: future });
+ok('申请等待配件(含日期)', wp.data.ticket.status === 'waiting_parts' && wp.data.ticket.parts_expected_at === future);
 
-// 等待配件
-const wp = await req('POST', `/tickets/${tid}/waiting-parts`, repair.token, { parts_note: '压缩机 X-1，预计 3 天' });
-ok('申请等待配件', wp.data.ticket.status === 'waiting_parts' && wp.data.ticket.parts_note);
+// 调整预计到货日期：留痕、非法值拒绝、非等待配件状态拒绝
+const newEta = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+const etaChange = await req('POST', `/tickets/${tid}/parts-eta`, repair.token, { parts_expected_at: newEta, reason: '厂家改期' });
+ok('调整到货日期成功', etaChange.status === 200 && etaChange.data.ticket.parts_expected_at === newEta, etaChange.data?.error);
+const etaLog = etaChange.data.logs.some(l => l.action === 'parts_eta_changed');
+ok('日期调整写入时间线', etaLog);
+const etaSame = await req('POST', `/tickets/${tid}/parts-eta`, repair.token, { parts_expected_at: newEta });
+ok('相同日期调整被拒', etaSame.status === 400);
+const etaOther = await req('POST', `/tickets/${tid}/parts-eta`, repair2.token, { parts_expected_at: newEta });
+ok('他人不能调整到货日期', etaOther.status === 403);
 
 // 非本人工单不能操作
 const wrongUser = await req('POST', `/tickets/${tid}/resume`, (await login('repair2', 'repair123')).token, {});
@@ -115,7 +130,6 @@ const checkApi = await req('GET', `/tickets/check-repeat?room_id=${room803.id}&c
 ok('冲突预判接口返回 conflict', checkApi.data.conflict !== null);
 
 console.log('\n=== 6. 房间限制售卖：维修员解除权限 ===');
-const repair2 = await login('repair2', 'repair123');
 // 清理第 5 节残留在 701 上的重复报修工单，避免干扰本节判定
 for (const tk of (await req('GET', `/tickets?room_id=${room701.id}`, front.token)).data
   .filter(x => !['completed', 'cancelled'].includes(x.status))) {
@@ -147,7 +161,7 @@ const authTid = authTk.data.ticket.id;
 await req('POST', `/tickets/${authTid}/accept`, repair.token, {});
 const activeUnblock = await req('POST', `/rooms/${room701.id}/unblock`, repair.token, { remark: '还在修' });
 ok('维修中本人解除被拒(403)', activeUnblock.status === 403, `实际 ${activeUnblock.status}`);
-await req('POST', `/tickets/${authTid}/waiting-parts`, repair.token, { parts_note: '锁芯，1 天' });
+await req('POST', `/tickets/${authTid}/waiting-parts`, repair.token, { parts_note: '锁芯，1 天', parts_expected_at: newEta });
 const waitingUnblock = await req('POST', `/rooms/${room701.id}/unblock`, repair.token, { remark: '等配件先解封' });
 ok('等待配件期间解除被拒(403)', waitingUnblock.status === 403, `实际 ${waitingUnblock.status}`);
 
@@ -189,7 +203,7 @@ const second = await req('POST', '/tickets', front.token, {
 });
 ok('第二笔工单创建为待接单', second.data.ticket.status === 'pending');
 // repair 完成手头工单的流程 -> submit -> complete
-await req('POST', `/tickets/${t803b.id}/waiting-parts`, repair.token, { parts_note: '下水管件，当天到' });
+await req('POST', `/tickets/${t803b.id}/waiting-parts`, repair.token, { parts_note: '下水管件，当天到', parts_expected_at: new Date(Date.now() + 86400000).toISOString().slice(0, 10) });
 await req('POST', `/tickets/${t803b.id}/resume`, repair.token, {});
 await req('POST', `/tickets/${t803b.id}/submit`, repair.token, { resolution: '更换下水管组件，渗漏消除' });
 const c2 = await req('POST', `/tickets/${t803b.id}/complete`, admin.token, { remark: '第一项验收合格' });
@@ -229,6 +243,64 @@ ok('有维修人员工作量数据', stats.workload.length === 2);
 ok('有 7 天趋势', Array.isArray(stats.trend));
 ok('平均维修时长可计算', stats.avgMinutes !== null);
 ok('维修员不能看看板', (await req('GET', '/stats/overview', repair.token)).status === 403);
+
+console.log('\n=== 10. 超时预警：数量与明细同口径 ===');
+// 数量取自 overview.alertsSummary，明细取自 /stats/alerts，两者必须一致
+const alerts = (await req('GET', '/stats/alerts', admin.token)).data.alerts;
+const cnt = k => alerts.filter(a => a.severity_key === k).length;
+ok('待接单超时: 数量=明细', stats.alertsSummary.pendingOverdue === cnt('pending_overdue'),
+  `${stats.alertsSummary.pendingOverdue} vs ${cnt('pending_overdue')}`);
+ok('维修超时: 数量=明细', stats.alertsSummary.activeOverdue === cnt('active_overdue'));
+ok('配件逾期: 数量=明细', stats.alertsSummary.partsOverdue === cnt('parts_overdue'));
+ok('配件今日到货: 数量=明细', stats.alertsSummary.partsToday === cnt('parts_today'));
+ok('返工: 数量=明细', stats.alertsSummary.rejected === cnt('rejected'));
+
+// 样例数据应覆盖全部预警类型（808 配件逾期 / 812 今日到货 / 706+802 待接单超时 / 708 维修超时 / 810 返工）
+ok('样例存在配件逾期预警', cnt('parts_overdue') >= 1);
+ok('样例存在今日到货预警', cnt('parts_today') >= 1);
+ok('样例存在待接单超时预警', cnt('pending_overdue') >= 2);
+ok('样例存在维修超时预警', cnt('active_overdue') >= 1);
+ok('预警含房间/维修员/超时时长字段', alerts.every(a => a.room_no && (a.assigned_name !== undefined)));
+
+// 严重程度排序：逾期类在前
+const rank = { pending_overdue: 0, parts_overdue: 1, rejected: 2, active_overdue: 3, parts_today: 4, parts_upcoming: 5 };
+let sorted = true;
+for (let i = 1; i < alerts.length; i++) {
+  if ((rank[alerts[i - 1].severity_key] ?? 9) > (rank[alerts[i].severity_key] ?? 9)) sorted = false;
+}
+ok('预警按严重程度排序', sorted);
+
+// 角色隔离：维修员只看到本人工单；前台无权访问
+const myAlerts = (await req('GET', '/stats/alerts', repair.token)).data.alerts;
+ok('维修员预警仅含本人工单', myAlerts.every(a => a.assigned_name === '张建国'),
+  `实际涉及: ${[...new Set(myAlerts.map(a => a.assigned_name))].join(',')}`);
+ok('维修员看不到未分配的待接单预警', !myAlerts.some(a => a.alert_type === 'pending_overdue'));
+ok('前台不能看预警明细', (await req('GET', '/stats/alerts', front.token)).status === 403);
+
+console.log('\n=== 11. 状态变化后预警自动移除、配件到位不计逾期 ===');
+// 主管接单处理掉一笔待接单超时预警前，先记录数量
+const before = (await req('GET', '/stats/alerts', admin.token)).data.alerts;
+const aPending = before.find(a => a.severity_key === 'pending_overdue');
+const beforePending = before.filter(a => a.severity_key === 'pending_overdue').length;
+// 维修员接单 -> 立即不再是 pending_overdue
+await req('POST', `/tickets/${aPending.id}/accept`, repair.token, {});
+const afterAccept = (await req('GET', '/stats/alerts', admin.token)).data.alerts;
+const afterPending = afterAccept.filter(a => a.severity_key === 'pending_overdue').length;
+ok('接单后从待接单超时预警移除', afterPending === beforePending - 1, `${beforePending} -> ${afterPending}`);
+
+// 808 配件逾期工单：配件到位恢复维修后，不再计入逾期
+const partsTicket = afterAccept.find(a => a.severity_key === 'parts_overdue');
+ok('存在可操作的配件逾期工单', !!partsTicket);
+if (partsTicket) {
+  const beforeParts = afterAccept.filter(a => a.severity_key === 'parts_overdue').length;
+  const tk = (await req('GET', `/tickets/${partsTicket.id}`, repair2.token)).data;
+  // 808 归属 repair2
+  const owner = tk.ticket.assigned_name === '赵伟' ? repair2 : repair;
+  await req('POST', `/tickets/${partsTicket.id}/resume`, owner.token, { remark: '配件已到货' });
+  const afterParts = (await req('GET', '/stats/alerts', admin.token)).data.alerts;
+  const gone = !afterParts.some(a => a.id === partsTicket.id && a.severity_key === 'parts_overdue');
+  ok('配件到位后不再计入逾期预警', gone && afterParts.filter(a => a.severity_key === 'parts_overdue').length === beforeParts - 1);
+}
 
 console.log(`\n================ 结果: ${pass} 通过, ${fail} 失败 ================`);
 process.exit(fail ? 1 : 0);

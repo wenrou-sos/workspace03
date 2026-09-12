@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { ensureSeed } from './seed.js';
+import { db } from './db.js';
 import usersRouter from './routes/users.js';
 import ticketsRouter from './routes/tickets.js';
 import roomsRouter from './routes/rooms.js';
@@ -19,6 +20,7 @@ app.use(express.json());
 app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 app.get('/api/meta', (req, res) => {
   res.json({
+    today: db.prepare(`SELECT date('now','localtime') AS d`).get().d,
     categories: CATEGORIES,
     statusLabel: STATUS_LABEL,
     statusColor: STATUS_COLOR,

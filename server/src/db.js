@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   is_repeat INTEGER NOT NULL DEFAULT 0,
   linked_ticket_id INTEGER REFERENCES tickets(id),
   parts_note TEXT,
+  parts_expected_at TEXT,
   reject_reason TEXT,
   resolution TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -73,6 +74,13 @@ CREATE TABLE IF NOT EXISTS room_logs (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 `);
+
+// 轻量迁移：为已存在的旧库补充新列
+function ensureColumn(table, column, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+}
+ensureColumn('tickets', 'parts_expected_at', 'TEXT');
 
 // ---------- 查询辅助 ----------
 
@@ -190,4 +198,98 @@ export function findRecentOpenTicket(roomId, days = 7) {
       AND created_at >= datetime('now','localtime', ?)
     ORDER BY created_at DESC, id DESC LIMIT 1
   `).get(roomId, `-${days} days`);
+}
+
+// 工单关联字段（预警查询复用）
+const ALERT_SELECT = `
+  SELECT t.id, t.code, t.title, t.category, t.priority, t.status,
+         t.room_id, r.room_no, r.status AS room_status,
+         t.assigned_to, au.name AS assigned_name,
+         cu.name AS created_by_name,
+         t.created_at, t.accepted_at, t.parts_note, t.parts_expected_at,
+         t.is_repeat, t.reject_reason
+  FROM tickets t
+  JOIN rooms r ON r.id = t.room_id
+  JOIN users cu ON cu.id = t.created_by
+  LEFT JOIN users au ON au.id = t.assigned_to
+`;
+
+// 各类待办预警 —— 看板数量与明细共用此函数，保证口径一致
+// assigneeId 非空时只返回该维修员负责的工单
+export function listAlerts(assigneeId = null) {
+  const scope = assigneeId ? 'AND t.assigned_to = @uid' : '';
+  const param = assigneeId ? { uid: assigneeId } : {};
+
+  // 待接单超过 2 小时
+  const pendingOverdue = db.prepare(`
+    ${ALERT_SELECT}
+    WHERE t.status = 'pending'
+      AND t.created_at <= datetime('now','localtime','-2 hours')
+      ${scope}
+  `).all(param).map(t => ({
+    ...t,
+    alert_type: 'pending_overdue',
+    overdue_minutes: db.prepare(
+      `SELECT CAST((julianday('now','localtime') - julianday(?)) * 24 * 60 AS INTEGER) AS m`
+    ).get(t.created_at).m
+  }));
+
+  // 返工单（验收不通过），超过 8 小时未重新处理记为超时
+  const rejected = db.prepare(`
+    ${ALERT_SELECT}
+    WHERE t.status = 'rejected' ${scope}
+  `).all(param).map(t => {
+    const last = db.prepare(`
+      SELECT MAX(created_at) AS at FROM ticket_logs WHERE ticket_id = ? AND action = 'rejected'
+    `).get(t.id)?.at || t.created_at;
+    const mins = Math.floor((Date.now() - new Date(last.replace(' ', 'T'))) / 60000);
+    return { ...t, alert_type: 'rejected', rejected_at: last, overdue_minutes: mins };
+  });
+
+  // 维修中超过 24 小时
+  const activeOverdue = db.prepare(`
+    ${ALERT_SELECT}
+    WHERE t.status = 'accepted'
+      AND t.created_at <= datetime('now','localtime','-1 days')
+      ${scope}
+  `).all(param).map(t => ({
+    ...t, alert_type: 'active_overdue',
+    overdue_minutes: Math.floor((Date.now() - new Date(t.created_at.replace(' ', 'T'))) / 60000)
+  }));
+
+  // 等待配件：按预计到货日期计算逾期/今日/未来
+  const today = db.prepare(`SELECT date('now','localtime') AS d`).get().d;
+  const waiting = db.prepare(`
+    ${ALERT_SELECT}
+    WHERE t.status = 'waiting_parts' ${scope}
+  `).all(param).map(t => {
+    const eta = t.parts_expected_at;
+    let level = 'unknown';
+    let overdue_days = null;
+    if (eta) {
+      const days = Math.floor((new Date(`${today}T00:00`) - new Date(`${eta.slice(0, 10)}T00:00`)) / 86400000);
+      overdue_days = days;
+      level = days > 0 ? 'overdue' : days === 0 ? 'today' : 'upcoming';
+    }
+    return { ...t, alert_type: 'waiting_parts', parts_level: level, overdue_days };
+  });
+
+  const severityRank = { pending_overdue: 0, parts_overdue: 1, rejected: 2, active_overdue: 3, parts_today: 4, parts_upcoming: 5 };
+  const keyOf = a =>
+    a.alert_type === 'waiting_parts'
+      ? (a.parts_level === 'overdue' ? 'parts_overdue' : a.parts_level === 'today' ? 'parts_today' : 'parts_upcoming')
+      : a.alert_type;
+
+  return [...pendingOverdue, ...rejected, ...activeOverdue, ...waiting]
+    .map(a => ({ ...a, severity_key: keyOf(a) }))
+    .sort((a, b) => {
+      const ra = severityRank[a.severity_key] ?? 9;
+      const rb = severityRank[b.severity_key] ?? 9;
+      if (ra !== rb) return ra - rb;
+      // 同级别：逾期久的在前，其次紧急优先级
+      const ma = a.overdue_days ?? (a.overdue_minutes ? a.overdue_minutes / 60 : 0);
+      const mb = b.overdue_days ?? (b.overdue_minutes ? b.overdue_minutes / 60 : 0);
+      if (mb !== ma) return mb - ma;
+      return (b.priority === 'high') - (a.priority === 'high');
+    });
 }
